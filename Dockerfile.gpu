@@ -38,6 +38,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ARG PYTHON_VERSION=3.12
+# Keep `gpu` in EXTRAS: both syncs below skip the CPU onnxruntime wheel, so
+# onnxruntime-gpu is the only thing that provides the `onnxruntime` module.
 ARG EXTRAS="extract,spellcheck,gpu"
 
 ENV UV_COMPILE_BYTECODE=1 \
@@ -51,6 +53,13 @@ WORKDIR /app
 # project tree out of this layer, so changing source code does not bust the
 # deps cache. The uv-managed interpreter is also installed here, into a
 # stable path that the runtime stage can copy verbatim.
+#
+# --no-install-package onnxruntime: chromadb and magika depend on the CPU
+# onnxruntime wheel, and it installs into the same `onnxruntime/` package
+# directory as onnxruntime-gpu. When both are installed, the CPU build can
+# overwrite the GPU build's native libraries, and CUDAExecutionProvider
+# disappears without an error. Skipping the CPU wheel leaves the lockfile
+# untouched, and `import onnxruntime` still resolves to onnxruntime-gpu.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=uv.lock,target=uv.lock \
@@ -59,7 +68,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv python install ${PYTHON_VERSION}; \
     flags=""; \
     for e in $(echo "${EXTRAS}" | tr ',' ' '); do flags="${flags} --extra ${e}"; done; \
-    uv sync --frozen --no-install-project --no-dev --python ${PYTHON_VERSION} ${flags}
+    uv sync --frozen --no-install-project --no-dev --python ${PYTHON_VERSION} \
+        --no-install-package onnxruntime ${flags}
 
 # Layer 2: the project itself. --no-editable installs mempalace into the
 # venv's site-packages (instead of an .pth pointing at /app), so the runtime
@@ -69,7 +79,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     set -e; \
     flags=""; \
     for e in $(echo "${EXTRAS}" | tr ',' ' '); do flags="${flags} --extra ${e}"; done; \
-    uv sync --frozen --no-dev --no-editable ${flags}
+    uv sync --frozen --no-dev --no-editable \
+        --no-install-package onnxruntime ${flags}
+
+# Fail the build when the CUDA provider is missing, so a lockfile refresh that
+# brings the CPU wheel back cannot ship a CPU-only "GPU" image. The provider
+# list is compiled into the wheel, so this check needs no GPU on the build host.
+RUN /app/.venv/bin/python -c "import onnxruntime as ort, sys; p = ort.get_available_providers(); print('onnxruntime providers:', p); sys.exit(0 if 'CUDAExecutionProvider' in p else 'CUDAExecutionProvider missing: the CPU onnxruntime wheel is shadowing onnxruntime-gpu')"
 
 # --- runtime ----------------------------------------------------------------
 FROM ${CUDA_IMAGE} AS runtime

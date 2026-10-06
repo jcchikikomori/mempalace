@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- **The `Dockerfile.gpu` image now ships the CUDA provider it asks for.**
+  chromadb and magika depend on the CPU `onnxruntime` wheel, which installs
+  into the same `onnxruntime/` package directory as `onnxruntime-gpu` and
+  overwrote its native libraries. The image therefore lacked
+  `CUDAExecutionProvider` and logged "falling back to CPU" even when run with
+  `--gpus all`. Both `uv sync` steps now skip the CPU wheel
+  (`--no-install-package onnxruntime`, lockfile unchanged), and the build
+  fails when the CUDA provider is missing, so the `build-gpu` CI job catches
+  a regression.
+
 ---
 
 ## [3.11.0] — 2026-10-02
